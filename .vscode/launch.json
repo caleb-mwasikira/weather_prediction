@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Flask",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "flask",
+      "env": {
+        "FLASK_APP": "app.py",  // replace with your filename
+        "FLASK_ENV": "development"
+      },
+      "args": [
+        "run",
+        "--no-debugger",  // VS Code provides debugger
+        "--no-reload"     // avoid double breakpoints
+      ],
+      "jinja": true
+    }
+  ]
+}
