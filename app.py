@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 import pandas as pd
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -7,27 +8,47 @@ PLANT_THRESHOLDS = {
     "tea": {
         "min_temp": 15,
         "max_temp": 25,
-        "min_rainfall": 12,
-        "max_rainfall": 15,
+        "min_precip": 12,
+        "max_precip": 15,
         "humidity": 60,
     },
-    "coffee/arabica": {
+    "coffee": {
         "min_temp": 18,
         "max_temp": 24,
-        "min_rainfall": 15,
-        "max_rainfall": 20,
+        "min_precip": 15,
+        "max_precip": 20,
         "humidity": 50,
         "altitude": (100, 800),
     },
-    "coffee/robusta": {
-        "min_temp": 24,
-        "max_temp": 30,
-        "min_rainfall": 20,
-        "max_rainfall": 30,
-        "humidity": 50,
-        "altitude": (180, 760),
-    }
+    # "coffee/arabica": {
+    #     "min_temp": 18,
+    #     "max_temp": 24,
+    #     "min_precip": 15,
+    #     "max_precip": 20,
+    #     "humidity": 50,
+    #     "altitude": (100, 800),
+    # },
+    # "coffee/robusta": {
+    #     "min_temp": 24,
+    #     "max_temp": 30,
+    #     "min_precip": 20,
+    #     "max_precip": 30,
+    #     "humidity": 50,
+    #     "altitude": (180, 760),
+    # }
 }
+
+def classify_weather(row):
+    if row["precip"] > 2.0:
+        return "Rain"
+    elif row["cloudcover"] > 80:
+        return "Overcast"
+    elif row["cloudcover"] < 15 and row["solarradiation"] > 500:
+        return "Sunny"
+    elif row["cloudcover"] > 40 or row["humidity"] > 70:
+        return "Partially cloudy"
+    else:
+        return "Clear"
 
 def load_weather_data() -> pd.DataFrame:
     print("Loading weather data...\n")
@@ -39,59 +60,57 @@ def load_weather_data() -> pd.DataFrame:
 
     weather = pd.concat([weather_2020,weather_2021,weather_2022,weather_2023,weather_2024], axis=0)
     weather.index = pd.to_datetime(weather.index)
+    
+    # Reformat weather conditions    
+    weather["conditions"] = weather.apply(classify_weather, axis=1)    
     return weather
 
 weather = load_weather_data()
 
 def get_recommendations(weather, my_plant):
-    if my_plant not in PLANT_THRESHOLDS.keys():
+    if my_plant not in PLANT_THRESHOLDS:
         return {"error": f"Unsupported plant {my_plant}"}
-
-    threshold = PLANT_THRESHOLDS[my_plant]
-    actions = {
-        "planting": [],
-        "irrigation": [],
-        "fertilization": [],
-        "harvesting": []
-    }
 
     avg_temp = weather['temp'].mean()
     avg_precip = weather['precip'].mean()
     avg_humidity = weather['humidity'].mean()
     avg_solar = weather['solarradiation'].mean()
     
+    threshold = PLANT_THRESHOLDS[my_plant]
     plant_min_temp = threshold["min_temp"]
-    plant_min_rainfall = threshold["min_rainfall"] 
-    plant_max_rainfall = threshold["max_rainfall"]
+    plant_min_precip = threshold["min_precip"] 
+    plant_max_precip = threshold["max_precip"]
     
     optimum_temp = (avg_temp / plant_min_temp) >= 0.6
-    high_rainfall = (avg_precip / plant_min_rainfall) >= 0.6
+    high_rainfall = (avg_precip / plant_min_precip) >= 0.6
 
+    recommendations = []
+    
     # Check planting conditions
     if optimum_temp and high_rainfall:
-        actions["planting"].append(f"Good conditions to plant {my_plant}.")
+        recommendations.append(f"Good conditions to plant {my_plant}.")
     
     # Check irrigation conditions
-    low_rainfall = (avg_precip / plant_min_rainfall) < 0.5
-    high_rainfall = (avg_precip / plant_max_rainfall) > 0.5
+    low_rainfall = (avg_precip / plant_min_precip) < 0.5
+    high_rainfall = (avg_precip / plant_max_precip) > 0.5
     if low_rainfall:
-        actions["irrigation"].append("Very low rainfall. Apply irrigation.")
+        recommendations.append("Very low rainfall. Apply irrigation.")
     
     if high_rainfall:
-        actions["irrigation"].append("Excess rainfall. Check for waterlogging.")
+        recommendations.append("Excess rainfall. Check for waterlogging.")
 
     # Check fertilizer application conditions
     optimum_temp = avg_temp >= 10 and avg_temp <= 29
     high_rainfall = avg_precip < 10
     
     if optimum_temp and high_rainfall:
-        actions["fertilization"].append("Apply fertilizers")
+        recommendations.append("Apply fertilizers")
     
     # Check harvesting conditions
-    high_rainfall = avg_precip <= plant_min_rainfall
+    high_rainfall = avg_precip <= plant_min_precip
     low_humidity = avg_humidity <= threshold["humidity"]
     if high_rainfall and low_humidity:
-        actions["harvesting"].append(f"Good conditions for harvesting {my_plant}.")
+        recommendations.append(f"Good conditions for harvesting {my_plant}.")
    
     return {
         "plant": my_plant,
@@ -100,13 +119,13 @@ def get_recommendations(weather, my_plant):
         "avg_precip": round(avg_precip, 1),
         "avg_humidity": round(avg_humidity, 1),
         "avg_solarradiation": round(avg_solar, 1),
-        "recommendations": actions
+        "recommendations": recommendations
     }
 
 # endpoint: GET /plant_thresholds/<plant>
 @app.route("/plant_thresholds/<plant>", methods=["GET"])
-def get_plant_thresholds(plant):
-    if plant not in PLANT_THRESHOLDS.keys():
+def get_plant_thresholds(plant: str):
+    if plant.lower() not in PLANT_THRESHOLDS:
         return jsonify({"error": f"Unsupported plant {plant}"}), 400
     
     threshold = PLANT_THRESHOLDS[plant]
@@ -120,7 +139,7 @@ def get_monthly_recommendations(month):
     if month < 1 or month > 12:
         return jsonify({"error": "Invalid month. Use 1-12."}), 400
     
-    if plant not in PLANT_THRESHOLDS.keys():
+    if plant not in PLANT_THRESHOLDS:
         return jsonify({"error": f"Unsupported plant {plant}"}), 400
 
     monthly_weather = weather[weather.index.month == month]
@@ -130,59 +149,129 @@ def get_monthly_recommendations(month):
     result = get_recommendations(monthly_weather, plant)
     return jsonify(result)
 
-# endpoint: GET /recommendations/week/<week>?plant=tea
-@app.route("/recommendations/week/<int:week>", methods=["GET"])
-def get_weekly_recommendations(week):
-    plant = request.args.get('plant', '').lower()
+# endpoint: GET /weather/today
+@app.route("/weather/today", methods=["GET"])
+def get_todays_weather():
+    weather["month_day"] = weather.index.strftime("%m-%d")
+    weather["year"] = weather.index.year
 
-    if week < 1 or week > 53: # 1-53 Number of weeks in a year
-        return jsonify({"error": "Invalid week. Use 1-53."}), 400
+    today = datetime.now()
+    month_day = today.strftime("%m-%d")
 
-    if plant not in PLANT_THRESHOLDS:
-        return jsonify({"error": f"Unsupported plant {plant}"}), 400
+    # Filter the DataFrame for the matching day across all years
+    data = weather[weather["month_day"] == month_day]
 
-    weekly_weather = weather[weather.index.isocalendar().week == week]
-    if weekly_weather.empty:
-        return jsonify({"error": f"No weather data for week {week}."}), 404
+    forecast_columns = ["temp", "humidity", "precip", "conditions"]
+    forecast = {}
 
-    result = get_recommendations(weekly_weather, plant)
-    return jsonify(result)
+    if not data.empty:
+        forecast_date = datetime.strptime(f"2025-{month_day}", "%Y-%m-%d")
+        forecast["date"] = forecast_date.isoformat()
 
+        for col in forecast_columns:
+            if col == "conditions":
+                mode_values = data[col].mode()
+                forecast[col] = mode_values.iloc[0] if not mode_values.empty else "Unknown"
+            else:
+                forecast[col] = round(data[col].mean(), 2)
 
-# endpoint: GET /recommendations/<month>/<week>?plant=tea
-@app.route("/recommendations/<int:month>/<int:week>", methods=["GET"])
-def get_week_of_month_recommendations(month, week):
-    plant = request.args.get('plant', '').lower()
+    return jsonify(forecast)
 
+# endpoint: GET /weather/<month>/<day>
+@app.route("/weather/<int:month>/<int:day>", methods=["GET"])
+def get_this_weeks_weather(month, day):
+    # Extract month and day for grouping
+    weather["month_day"] = weather.index.strftime("%m-%d")
+    weather["year"] = weather.index.year
+
+    # Define forecast target dates
+    this_year = datetime.today().date().year
+    today = datetime(this_year, month, day)
+    upcoming_days = []
+
+    for offset in range(1, 8):
+        next_day = today + timedelta(days=offset)
+        formatted_day = next_day.strftime("%m-%d")
+        upcoming_days.append(formatted_day)
+
+    forecast_columns = ["temp", "humidity", "precip", "conditions"]
+    forecast = []
+
+    # Calculate avg weather conditions over the years
+    for month_day in upcoming_days:
+        data = weather[weather["month_day"] == month_day]
+        
+        if not data.empty:
+            avg = {
+                "date": f"2025-{month_day}",
+            }
+            for col in forecast_columns:
+                if col == "conditions":
+                    # Most frequent condition
+                    mode_values = data[col].mode()
+                    if not mode_values.empty:
+                        avg[col] = mode_values.iloc[0]
+                    else:
+                        avg[col] = "Unknown"
+                else:
+                    avg[col] = round(data[col].mean(), 2) 
+            forecast.append(avg)
+
+    forecast_df = pd.DataFrame(forecast)
+    
+    # Ensure 'date' column is datetime (in case it's a string)
+    forecast_df['date'] = pd.to_datetime(forecast_df['date'])
+
+    forecast_json = forecast_df.to_json(orient="records", date_format="iso")
+    return forecast_json
+
+# endpoint: GET /weather/<month>
+@app.route("/weather/<int:month>", methods=["GET"])
+def get_this_months_weather(month):
     if month < 1 or month > 12:
         return jsonify({"error": "Invalid month. Use 1-12."}), 400
-    if week < 1 or week > 5:
-        return jsonify({"error": "Invalid week of month. Use 1-5."}), 400
-    if plant not in PLANT_THRESHOLDS:
-        return jsonify({"error": f"Unsupported plant {plant}"}), 400
+    
+    # Extract month-day and year from index
+    weather["month_day"] = weather.index.strftime("%m-%d")
+    weather["year"] = weather.index.year
+    weather["month"] = weather.index.month
+    weather["day"] = weather.index.day
 
-    if not isinstance(weather.index, pd.DatetimeIndex):
-        return jsonify({"error": "Weather index is not datetime."}), 500
+    # Filter weather data for the requested month
+    month_data = weather[weather["month"] == month]
 
-    def get_week_of_month(date):
-        first_day = date.replace(day=1)
-        return ((date.day + first_day.weekday()) // 7) + 1
+    if month_data.empty:
+        return jsonify({"error": "No weather data for this month"}), 404
 
-    weather2 = weather.copy()
-    weather2["month"] = weather2.index.month
-    weather2["week_of_month"] = weather2.index.to_series().apply(get_week_of_month)
+    forecast_columns = ["tempmax", "tempmin", "temp", "humidity", "precip", "windspeed", "conditions"]
+    forecast = []
 
-    filtered_weather = weather2[
-        (weather2["month"] == month) &
-        (weather2["week_of_month"] == week)
-    ]
+    # Group by day of the month to aggregate per date
+    grouped = month_data.groupby("day")
 
-    if filtered_weather.empty:
-        return jsonify({"error": f"No weather data for month {month}, week {week}."}), 404
+    for day, group in grouped:
+        month_day_str = f"{month:02d}-{day:02d}"
+        avg = {
+            "date": f"2025-{month_day_str}",
+        }
+        for col in forecast_columns:
+            if col == "conditions":
+                # Most frequent conditions
+                mode_values = group[col].mode()
+                if not mode_values.empty:
+                    avg[col] = mode_values.iloc[0]
+                else:
+                    avg[col] = "Unknown"
+            else:
+                avg[col] = round(group[col].mean(), 2)
+        forecast.append(avg)
 
-    result = get_recommendations(filtered_weather, plant)
-    return jsonify(result)
+    forecast_df = pd.DataFrame(forecast)
+    forecast_df['date'] = pd.to_datetime(forecast_df['date'], errors='coerce')
+    forecast_df['day'] = forecast_df['date'].dt.day_name()
 
+    forecast_json = forecast_df.to_json(orient="records", date_format="iso")
+    return forecast_json
 
 if __name__ == '__main__':
     app.run(debug=True)
