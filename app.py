@@ -42,14 +42,36 @@ PLANT_THRESHOLDS: dict[str, dict] = {
 
 weather = load_weather_data()
 
-def get_recommendations(weather, my_plant):
+def get_recommendations(weather_data, my_plant):
+    """
+    Generates agricultural recommendations based on weather data for a given plant.
+
+    Args:
+        weather_data (pd.DataFrame): Weather data (temp, precip, humidity, solarradiation)
+                                                for the specified period. This will now typically be
+                                                a wider rolling window (e.g., 21 days).
+        my_plant (str): The name of the plant for which to get recommendations (e.g., "corn", "wheat").
+
+    Returns:
+        dict: A dictionary containing recommendations or an error message.
+    """
     if my_plant not in PLANT_THRESHOLDS:
         return {"error": f"Unsupported plant '{my_plant}'"}
 
-    avg_temp = weather['temp'].mean()
-    avg_precip = weather['precip'].mean()
-    avg_humidity = weather['humidity'].mean()
-    avg_solar = weather['solarradiation'].mean()
+    if not isinstance(weather_data, pd.DataFrame):
+        try:
+            weather_data = pd.DataFrame(weather_data)
+        except Exception as e:
+            return {"error": f"Invalid weather data format: {e}"}
+
+    required_cols = ['temp', 'precip', 'humidity', 'solarradiation']
+    if not all(col in weather_data.columns for col in required_cols):
+        return {"error": f"Missing required weather data columns. Need: {', '.join(required_cols)}"}
+
+    avg_temp = weather_data['temp'].mean()
+    avg_precip = weather_data['precip'].mean()
+    avg_humidity = weather_data['humidity'].mean()
+    avg_solar = weather_data['solarradiation'].mean()
 
     threshold = PLANT_THRESHOLDS[my_plant]
     min_temp = threshold["min_temp"]
@@ -59,37 +81,111 @@ def get_recommendations(weather, my_plant):
 
     recommendations = []
 
-    # Planting Conditions
-    if avg_temp >= min_temp and min_precip <= avg_precip <= max_precip:
-        recommendations.append(f"Good conditions to plant {my_plant}.")
-    elif avg_temp < min_temp:
-        recommendations.append("Temperature too low for planting.")
-    elif avg_precip < min_precip:
-        recommendations.append("Rainfall too low for planting.")
-    elif avg_precip > max_precip:
-        recommendations.append("Too much rainfall for planting.")
+    recent_precip = weather_data['precip'].iloc[-1] if not weather_data['precip'].empty else 0
+    
+    is_currently_raining = recent_precip > 0.5
 
-    # Irrigation
-    if avg_precip < (0.5 * min_precip):
-        recommendations.append("Very low rainfall. Apply irrigation.")
+    # Planting Conditions Recommendations
+    if avg_precip > max_precip:
+        recommendations.append(f"High avg rain. Good conditions for planting {my_plant}.")
+    
+    # Check for ideal planting conditions
+    elif avg_temp >= min_temp and min_precip <= avg_precip <= max_precip:
+        recommendations.append(f"Good conditions for planting {my_plant}.")
+    
+    # Check for temperature too low
+    elif avg_temp < min_temp:
+        recommendations.append(f"Temp too low. Wait for warmer conditions.")
+    
+    # Check for rainfall too low, with a nuance for current rain
+    elif avg_precip < min_precip:
+        if is_currently_raining:
+            recommendations.append(f"Avg rain low, but currently raining. Monitor closely.")
+        else:
+            recommendations.append(f"Rainfall too low. Irrigation may be needed.")
+
+    # Irrigation Recommendations
+    # Suggest irrigation if average is very low AND it's not currently raining significantly
+    if avg_precip < (0.5 * min_precip) and not is_currently_raining:
+        recommendations.append(f"Very low avg rain. Apply irrigation.")
+    
+    elif avg_precip < (0.5 * min_precip) and is_currently_raining:
+         recommendations.append(f"Very low avg rain, but currently raining. Monitor water levels.")
 
     # Waterlogging Warning
-    if avg_precip > max_precip:
-        recommendations.append("Excess rainfall. Check for waterlogging.")
+    if avg_precip > max_precip * 1.2:
+        recommendations.append(f"Excessive avg rain. High waterlogging risk. Ensure drainage.")
+    
+    # Flag potential waterlogging if recent rain is high, even if average isn't extremely high
+    elif recent_precip > max_precip * 0.5:
+         recommendations.append(f"High recent rain. Potential waterlogging risk. Monitor.")
 
-    # Fertilizer Application
-    if 10 <= avg_temp <= 29 and avg_precip < 10:
-        recommendations.append("Favorable conditions for fertilizer application.")
+    # Favorable conditions for fertilizer application, avoiding waterlogged soil and active rain
+    if 10 <= avg_temp <= 29 and avg_precip < 10 and not is_currently_raining and recent_precip < 5:
+        recommendations.append("Favorable for fertilizer application.")
+    
+    # If conditions are otherwise favorable but it's currently raining
+    elif 10 <= avg_temp <= 29 and avg_precip < 10 and is_currently_raining:
+        recommendations.append("Favorable for fertilizer, but currently raining. Apply after rain subsides.")
 
-    # Harvesting Conditions
+    # Harvesting Conditions Recommendations
     if avg_precip <= min_precip and avg_humidity <= max_humidity:
-        recommendations.append(f"Good conditions for harvesting {my_plant}.")
+        recommendations.append(f"Good for harvesting {my_plant}.")
 
     if not recommendations:
         recommendations.append("No specific recommendations for current conditions.")
 
     return recommendations
 
+ROLLING_WINDOW_DAYS = 21
+
+@app.route("/recommendations/<int:month>/<int:day>", methods=["GET"])
+def get_weekly_recommendations(month, day):
+    """
+    Provides agricultural recommendations for a specific week, using a rolling window
+    of weather data to provide steadier advice.
+
+    Args:
+        month (int): The month of the desired week.
+        day (int): The day of the desired week.
+
+    Query Parameters:
+        plant (str): The name of the plant (e.g., "corn", "wheat").
+
+    Returns:
+        JSON: A JSON response containing plant, week details, and recommendations.
+    """
+    plant = request.args.get('plant', '').lower()
+
+    if plant not in PLANT_THRESHOLDS:
+        return jsonify({"error": f"Unsupported plant '{plant}'"}), 400
+
+    try:
+        year = weather.index[0].year
+        query_date = datetime(year, month, day)
+    except ValueError:
+        return jsonify({"error": "Invalid date."}), 400
+
+    week_end_for_query = query_date + timedelta(days=(6 - query_date.weekday()))
+    rolling_window_start = week_end_for_query - timedelta(days=ROLLING_WINDOW_DAYS - 1)
+
+    # Filter weather data for this calculated rolling window
+    rolling_weather = weather[
+        (weather.index.date >= rolling_window_start.date()) &
+        (weather.index.date <= week_end_for_query.date())
+    ]
+
+    if rolling_weather.empty:
+        return jsonify({"error": "No weather data available for the specified rolling period."}), 404
+
+    recommendations = get_recommendations(rolling_weather, plant)
+
+    return jsonify({
+        "plant": plant,
+        "week_start": (query_date - timedelta(days=query_date.weekday())).strftime("%Y-%m-%d"),
+        "week_end": week_end_for_query.strftime("%Y-%m-%d"),
+        "recommendations": recommendations
+    })
 
 # endpoint: GET /plant_thresholds/<plant>
 @app.route("/plant_thresholds/<plant>", methods=["GET"])
@@ -100,42 +196,6 @@ def get_plant_thresholds(plant):
     
     threshold = PLANT_THRESHOLDS[plant]
     return jsonify(threshold)
-
-@app.route("/recommendations/<int:month>/<int:day>", methods=["GET"])
-def get_weekly_recommendations(month, day):
-    plant = request.args.get('plant', '').lower()
-
-    if plant not in PLANT_THRESHOLDS:
-        return jsonify({"error": f"Unsupported plant '{plant}'"}), 400
-
-    try:
-        # Use a dummy year since only month/day matters for filtering
-        year = weather.index[0].year
-        date = datetime(year, month, day)
-    except ValueError:
-        return jsonify({"error": "Invalid date."}), 400
-
-    # Define the start and end of the week (Sunday–Saturday)
-    week_start = date - timedelta(days=date.weekday())
-    week_end = week_start + timedelta(days=6)
-
-    # Filter weather data for the week
-    weekly_weather = weather[
-        (weather.index.date >= week_start.date()) &
-        (weather.index.date <= week_end.date())
-    ]
-
-    if weekly_weather.empty:
-        return jsonify({"error": "No weather data available for this week."}), 404
-
-    recommendations = get_recommendations(weekly_weather, plant)
-
-    return jsonify({
-        "plant": plant,
-        "week_start": week_start.strftime("%Y-%m-%d"),
-        "week_end": week_end.strftime("%Y-%m-%d"),
-        "recommendations": recommendations
-    })
 
 # endpoint: GET /weather/today
 @app.route("/weather/today", methods=["GET"])
@@ -168,7 +228,6 @@ def get_todays_weather():
 # endpoint: GET /weather/<month>/<day>
 @app.route("/weather/<int:month>/<int:day>", methods=["GET"])
 def get_this_weeks_weather(month, day):
-    # Extract month and day for grouping
     weather["month_day"] = weather.index.strftime("%m-%d")
     weather["year"] = weather.index.year
 
@@ -225,7 +284,6 @@ def get_this_months_weather(month):
     weather["month"] = weather.index.month
     weather["day"] = weather.index.day
 
-    # Filter weather data for the requested month
     month_data = weather[weather["month"] == month]
 
     if month_data.empty:
