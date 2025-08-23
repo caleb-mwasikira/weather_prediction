@@ -1,11 +1,64 @@
-from flask import Flask, jsonify, request
+import os
 import pandas as pd
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+from flask_jwt_extended import JWTManager
+from werkzeug.exceptions import HTTPException
+
+# My imports
+from auth import router as auth_router
+from extensions import db, jwt
 from data_prep import load_weather_data, CROP_THRESHOLDS
 
-app = Flask(__name__)
+
+def create_app():
+    app = Flask(__name__)
+    app.register_blueprint(auth_router)
+
+    # -- JWT config --
+    load_dotenv()
+    app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
+
+    # -- Database config --
+    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///agritech.db"
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+    jwt = JWTManager(app)
+    db.init_app(app)
+    jwt.init_app(app)
+
+    with app.app_context():
+        # one-time setup, e.g. create tables
+        db.create_all()
+
+    return app
+
+# -- Create Flask app --
+app = create_app()
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    if isinstance(e, HTTPException):
+        # Flask/Werkzeug exception (already has status code)
+        code = e.code
+        message = e.description
+    else:
+        # Generic Python exception → treat as 500
+        print(str(e))
+        code = 500
+        message = "Internal Server Error"
+
+    response = {
+        "error": e.__class__.__name__,
+        "msg": message,
+    }
+    return jsonify(response), code
+
 
 weather = load_weather_data("weather_data")
+
 
 def get_recommendations(weather_data, crop):
     """
@@ -50,57 +103,67 @@ def get_recommendations(weather_data, crop):
 
     # Planting Conditions Recommendations
     if avg_precip > max_precip:
-        recommendations.append(f"High avg rain. Good conditions for planting {crop}.")
-    
+        recommendations.append(
+            f"High avg rain. Good conditions for planting {crop}.")
+
     # Check for ideal planting conditions
     elif avg_temp >= max_temp and min_precip <= avg_precip <= max_precip:
         recommendations.append(f"Good conditions for planting {crop}.")
-    
+
     # Check for temperature too low
     elif avg_temp < max_temp:
         recommendations.append(f"Temp too low. Wait for warmer conditions.")
-    
+
     # Check for rainfall too low, with a nuance for current rain
     elif avg_precip < min_precip:
         if is_currently_raining:
-            recommendations.append(f"Avg rain low, but currently raining. Monitor closely.")
+            recommendations.append(
+                f"Avg rain low, but currently raining. Monitor closely.")
         else:
-            recommendations.append(f"Rainfall too low. Irrigation may be needed.")
+            recommendations.append(
+                f"Rainfall too low. Irrigation may be needed.")
 
     # Irrigation Recommendations
     # Suggest irrigation if average is very low AND it's not currently raining significantly
     if avg_precip < (0.5 * min_precip) and not is_currently_raining:
         recommendations.append(f"Very low avg rain. Apply irrigation.")
-    
+
     elif avg_precip < (0.5 * min_precip) and is_currently_raining:
-         recommendations.append(f"Very low avg rain, but currently raining. Monitor water levels.")
+        recommendations.append(
+            f"Very low avg rain, but currently raining. Monitor water levels.")
 
     # Waterlogging Warning
     if avg_precip > max_precip * 1.2:
-        recommendations.append(f"Excessive avg rain. High waterlogging risk. Ensure drainage.")
-    
+        recommendations.append(
+            f"Excessive avg rain. High waterlogging risk. Ensure drainage.")
+
     # Flag potential waterlogging if recent rain is high, even if average isn't extremely high
     elif recent_precip > max_precip * 0.5:
-         recommendations.append(f"High recent rain. Potential waterlogging risk. Monitor.")
+        recommendations.append(
+            f"High recent rain. Potential waterlogging risk. Monitor.")
 
     # Favorable conditions for fertilizer application, avoiding waterlogged soil and active rain
     if 10 <= avg_temp <= 29 and avg_precip < 10 and not is_currently_raining and recent_precip < 5:
         recommendations.append("Favorable for fertilizer application.")
-    
+
     # If conditions are otherwise favorable but it's currently raining
     elif 10 <= avg_temp <= 29 and avg_precip < 10 and is_currently_raining:
-        recommendations.append("Favorable for fertilizer, but currently raining. Apply after rain subsides.")
+        recommendations.append(
+            "Favorable for fertilizer, but currently raining. Apply after rain subsides.")
 
     # Harvesting Conditions Recommendations
     if avg_precip <= min_precip and avg_humidity <= max_humidity:
         recommendations.append(f"Good for harvesting {crop}.")
 
     if not recommendations:
-        recommendations.append("No specific recommendations for current conditions.")
+        recommendations.append(
+            "No specific recommendations for current conditions.")
 
     return recommendations
 
+
 ROLLING_WINDOW_DAYS = 21
+
 
 @app.route("/recommendations/<string:location>/<int:month>/<int:day>", methods=["GET"])
 def get_weekly_recommendations(location, month, day):
@@ -135,8 +198,10 @@ def get_weekly_recommendations(location, month, day):
     except ValueError:
         return jsonify({"error": "Invalid date."}), 400
 
-    week_end_for_query = query_date + timedelta(days=(6 - query_date.weekday()))
-    rolling_window_start = week_end_for_query - timedelta(days=ROLLING_WINDOW_DAYS - 1)
+    week_end_for_query = query_date + \
+        timedelta(days=(6 - query_date.weekday()))
+    rolling_window_start = week_end_for_query - \
+        timedelta(days=ROLLING_WINDOW_DAYS - 1)
 
     # Filter local_weather data for this calculated rolling window
     rolling_weather = local_weather[
@@ -155,6 +220,7 @@ def get_weekly_recommendations(location, month, day):
         "week_end": week_end_for_query.strftime("%Y-%m-%d"),
         "recommendations": recommendations
     })
+
 
 def is_suitable_crop(weather_data, crop_thresholds):
     """
@@ -196,35 +262,43 @@ def is_suitable_crop(weather_data, crop_thresholds):
     return len(suitable_seasons) > 0
 
 # endpoint: GET /all-crops
+
+
 @app.route("/all-crops", methods=["GET"])
 def get_all_crops():
     crops: list[dict[str, dict]] = []
-    
+
     for crop, threshold in CROP_THRESHOLDS.items():
         threshold["name"] = crop
         crops.append(threshold)
-    
+
     return jsonify(crops)
 
 # endpoint: GET /all-locations
+
+
 @app.route("/all-locations", methods=["GET"])
 def get_all_locations():
     locations = weather["name"].unique().tolist()
     return jsonify(locations)
 
 # endpoint: GET /crop_thresholds/<crop>
+
+
 @app.route("/crop_thresholds/<string:crop>", methods=["GET"])
 def get_crop_thresholds(crop):
     crop = crop.lower()
     if crop not in CROP_THRESHOLDS:
         return jsonify({"error": f"Unsupported crop {crop}"}), 400
-    
+
     threshold = CROP_THRESHOLDS[crop]
     threshold["name"] = crop
-    
+
     return jsonify(threshold)
 
 # endpoint: GET /suitable_crops/<location>
+
+
 @app.route("/suitable_crops/<string:location>", methods=["GET"])
 def get_suitable_crops(location):
     # Filter weather data based on a location
@@ -247,6 +321,8 @@ def get_suitable_crops(location):
     return jsonify(suitable_crops)
 
 # endpoint: GET /weather/today
+
+
 @app.route("/weather/today/<string:location>", methods=["GET"])
 def get_todays_weather(location):
     # Filter weather data based on a location
@@ -280,6 +356,8 @@ def get_todays_weather(location):
     return jsonify(forecast)
 
 # endpoint: GET /weather/<month>/<day>
+
+
 @app.route("/weather/<string:location>/<int:month>/<int:day>", methods=["GET"])
 def get_this_weeks_weather(location, month, day):
     # Filter weather data based on a location
@@ -300,13 +378,14 @@ def get_this_weeks_weather(location, month, day):
         formatted_day = next_day.strftime("%m-%d")
         upcoming_days.append(formatted_day)
 
-    forecast_columns = ["tempmax", "tempmin", "temp", "humidity", "precip", "windspeed", "conditions"]
+    forecast_columns = ["tempmax", "tempmin", "temp",
+                        "humidity", "precip", "windspeed", "conditions"]
     forecast = []
 
     # Calculate avg local_weather conditions over the years
     for month_day in upcoming_days:
         data = local_weather[local_weather["month_day"] == month_day]
-        
+
         if not data.empty:
             avg = {
                 "date": f"2025-{month_day}",
@@ -320,11 +399,11 @@ def get_this_weeks_weather(location, month, day):
                     else:
                         avg[col] = "Unknown"
                 else:
-                    avg[col] = round(data[col].mean(), 2) 
+                    avg[col] = round(data[col].mean(), 2)
             forecast.append(avg)
 
     forecast_df = pd.DataFrame(forecast)
-    
+
     # Ensure 'date' column is datetime (in case it's a string)
     forecast_df['date'] = pd.to_datetime(forecast_df['date'])
 
@@ -332,16 +411,18 @@ def get_this_weeks_weather(location, month, day):
     return forecast_json
 
 # endpoint: GET /weather/<month>
+
+
 @app.route("/weather/<string:location>/<int:month>", methods=["GET"])
 def get_this_months_weather(location, month):
     if month < 1 or month > 12:
         return jsonify({"error": "Invalid month. Use 1-12."}), 400
-    
+
     # Filter weather data based on a location
     local_weather = weather[weather["name"] == location]
     if local_weather.empty:
         return jsonify({"error": f"No weather data found for location {location}"})
-    
+
     # Extract month-day and year from index
     local_weather["month_day"] = local_weather.index.strftime("%m-%d")
     local_weather["year"] = local_weather.index.year
@@ -353,7 +434,8 @@ def get_this_months_weather(location, month):
     if month_data.empty:
         return jsonify({"error": "No weather data for this month"}), 404
 
-    forecast_columns = ["tempmax", "tempmin", "temp", "humidity", "precip", "windspeed", "conditions"]
+    forecast_columns = ["tempmax", "tempmin", "temp",
+                        "humidity", "precip", "windspeed", "conditions"]
     forecast = []
 
     # Group by day of the month to aggregate per date
@@ -382,6 +464,7 @@ def get_this_months_weather(location, month):
 
     forecast_json = forecast_df.to_json(orient="records", date_format="iso")
     return forecast_json
+
 
 if __name__ == '__main__':
     app.run(debug=True)
