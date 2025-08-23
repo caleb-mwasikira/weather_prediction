@@ -34,6 +34,7 @@ def create_app():
 
     return app
 
+
 # -- Create Flask app --
 app = create_app()
 
@@ -50,11 +51,7 @@ def handle_exception(e):
         code = 500
         message = "Internal Server Error"
 
-    response = {
-        "error": e.__class__.__name__,
-        "msg": message,
-    }
-    return jsonify(response), code
+    return jsonify({"msg": message}), code
 
 
 weather = load_weather_data("weather_data")
@@ -74,17 +71,17 @@ def get_recommendations(weather_data, crop):
         dict: A dictionary containing recommendations or an error message.
     """
     if crop not in CROP_THRESHOLDS:
-        return {"error": f"Unsupported crop '{crop}'"}
+        return {"msg": f"Unsupported crop '{crop}'"}
 
     if not isinstance(weather_data, pd.DataFrame):
         try:
             weather_data = pd.DataFrame(weather_data)
         except Exception as e:
-            return {"error": f"Invalid weather data format: {e}"}
+            return {"msg": f"Invalid weather data format: {e}"}
 
     required_cols = ['temp', 'precip', 'humidity', 'solarradiation']
     if not all(col in weather_data.columns for col in required_cols):
-        return {"error": f"Missing required weather data columns. Need: {', '.join(required_cols)}"}
+        return {"msg": f"Missing required weather data columns. Need: {', '.join(required_cols)}"}
 
     avg_temp = weather_data['temp'].mean()
     avg_precip = weather_data['precip'].mean()
@@ -185,18 +182,18 @@ def get_weekly_recommendations(location, month, day):
     crop = request.args.get('crop', '').lower()
 
     if crop not in CROP_THRESHOLDS:
-        return jsonify({"error": f"Unsupported crop '{crop}'"}), 400
+        return jsonify({"msg": f"Unsupported crop '{crop}'"}), 400
 
     # Filter weather data based on a location
     local_weather = weather[weather["name"] == location]
     if local_weather.empty:
-        return jsonify({"error": f"No weather data found for location {location}"})
+        return jsonify({"msg": f"No weather data found for location {location}"})
 
     try:
         year = local_weather.index[0].year
         query_date = datetime(year, month, day)
     except ValueError:
-        return jsonify({"error": "Invalid date."}), 400
+        return jsonify({"msg": "Invalid date."}), 400
 
     week_end_for_query = query_date + \
         timedelta(days=(6 - query_date.weekday()))
@@ -210,7 +207,7 @@ def get_weekly_recommendations(location, month, day):
     ]
 
     if rolling_weather.empty:
-        return jsonify({"error": "No weather data available for the specified rolling period."}), 404
+        return jsonify({"msg": "No weather data available for the specified rolling period."}), 404
 
     recommendations = get_recommendations(rolling_weather, crop)
 
@@ -289,7 +286,7 @@ def get_all_locations():
 def get_crop_thresholds(crop):
     crop = crop.lower()
     if crop not in CROP_THRESHOLDS:
-        return jsonify({"error": f"Unsupported crop {crop}"}), 400
+        return jsonify({"msg": f"Unsupported crop {crop}"}), 400
 
     threshold = CROP_THRESHOLDS[crop]
     threshold["name"] = crop
@@ -304,7 +301,7 @@ def get_suitable_crops(location):
     # Filter weather data based on a location
     local_weather = weather[weather["name"] == location]
     if local_weather.empty:
-        return jsonify({"error": f"No weather data found for location {location}"})
+        return jsonify({"msg": f"No weather data found for location {location}"})
 
     suitable_crops: list[dict[str, dict]] = []
 
@@ -316,7 +313,7 @@ def get_suitable_crops(location):
             print(f"Crop {crop} not suitable to grow in {location}")
 
     if not suitable_crops:
-        return jsonify({"error": f"No crops suitable to grow in {location} were found"})
+        return jsonify({"msg": f"No crops suitable to grow in {location} were found"})
 
     return jsonify(suitable_crops)
 
@@ -328,7 +325,7 @@ def get_todays_weather(location):
     # Filter weather data based on a location
     local_weather = weather[weather["name"] == location]
     if local_weather.empty:
-        return jsonify({"error": f"No weather data found for location {location}"})
+        return jsonify({"msg": f"No weather data found for location {location}"})
 
     local_weather["month_day"] = local_weather.index.strftime("%m-%d")
     local_weather["year"] = local_weather.index.year
@@ -363,7 +360,7 @@ def get_this_weeks_weather(location, month, day):
     # Filter weather data based on a location
     local_weather = weather[weather["name"] == location]
     if local_weather.empty:
-        return jsonify({"error": f"No weather data found for location {location}"})
+        return jsonify({"msg": f"No weather data found for location {location}"})
 
     local_weather.loc[:, "month_day"] = local_weather.index.strftime("%m-%d")
     local_weather.loc[:, "year"] = local_weather.index.year
@@ -416,12 +413,12 @@ def get_this_weeks_weather(location, month, day):
 @app.route("/weather/<string:location>/<int:month>", methods=["GET"])
 def get_this_months_weather(location, month):
     if month < 1 or month > 12:
-        return jsonify({"error": "Invalid month. Use 1-12."}), 400
+        return jsonify({"msg": "Invalid month. Use 1-12."}), 400
 
     # Filter weather data based on a location
     local_weather = weather[weather["name"] == location]
     if local_weather.empty:
-        return jsonify({"error": f"No weather data found for location {location}"})
+        return jsonify({"msg": f"No weather data found for location {location}"})
 
     # Extract month-day and year from index
     local_weather["month_day"] = local_weather.index.strftime("%m-%d")
@@ -432,7 +429,7 @@ def get_this_months_weather(location, month):
     month_data = local_weather[local_weather["month"] == month]
 
     if month_data.empty:
-        return jsonify({"error": "No weather data for this month"}), 404
+        return jsonify({"msg": "No weather data for this month"}), 404
 
     forecast_columns = ["tempmax", "tempmin", "temp",
                         "humidity", "precip", "windspeed", "conditions"]
